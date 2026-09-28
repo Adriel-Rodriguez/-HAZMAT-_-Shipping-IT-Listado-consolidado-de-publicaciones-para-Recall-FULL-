@@ -124,7 +124,68 @@
     border-top:1px solid rgba(255,255,255,0.1);
     font-size:12.5px;
     color:#d7d9f2;
+    flex-wrap:wrap;
   }
+  .date-range{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    margin-left:auto;
+    flex-wrap:wrap;
+  }
+  .date-range input[type="date"]{
+    font-family:inherit;
+    font-size:12px;
+    padding:4px 6px;
+    border:1px solid rgba(255,255,255,0.35);
+    background:rgba(255,255,255,0.1);
+    color:#fff;
+    color-scheme:dark;
+    border-radius:3px;
+  }
+  .chips{display:flex; gap:4px;}
+  .chips button{
+    font-family:inherit; font-size:11.5px; padding:4px 10px;
+    border:1px solid rgba(255,255,255,0.35); background:transparent; color:#fff;
+    border-radius:12px; cursor:pointer;
+  }
+  .chips button:hover{border-color:var(--yellow);}
+  .chips button.active{background:var(--yellow); color:var(--navy); border-color:var(--yellow); font-weight:700;}
+  .movements{
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    padding:8px 0 12px 2px; border-top:1px solid rgba(255,255,255,0.1);
+    font-size:12px; color:#d7d9f2;
+  }
+  .mv-title{font-weight:700; color:#fff;}
+  .mv-sub{color:#aeb3e0; font-size:11.5px;}
+  .mv-pills{display:flex; gap:8px; flex-wrap:wrap;}
+  .mv-pill{display:inline-flex; align-items:center; gap:6px; background:rgba(255,255,255,0.09); padding:3px 10px; border-radius:12px;}
+  .mv-pill b{font-family:'IBM Plex Mono', monospace; color:#fff;}
+  .mv-dot{width:8px; height:8px; border-radius:2px; display:inline-block;}
+  .mv-chart{display:flex; align-items:flex-end; gap:2px; height:34px; flex:1; min-width:200px; max-width:520px;}
+  .mv-bar{flex:1; max-width:16px; min-width:2px; height:100%; display:flex; align-items:flex-end;}
+  .mv-stack{width:100%; display:flex; flex-direction:column-reverse; min-height:1px;}
+  .date-range select{
+    font-family:inherit;
+    font-size:12px;
+    padding:4px 6px;
+    border:1px solid rgba(255,255,255,0.35);
+    background:var(--navy);
+    color:#fff;
+    border-radius:3px;
+  }
+  .date-range input[type="date"]:focus{outline:2px solid var(--yellow); outline-offset:1px;}
+  .date-range button{
+    font-family:inherit;
+    font-size:11.5px;
+    padding:4px 10px;
+    border:1px solid rgba(255,255,255,0.35);
+    background:transparent;
+    color:#fff;
+    border-radius:3px;
+    cursor:pointer;
+  }
+  .date-range button:hover{background:var(--yellow); color:var(--navy); border-color:var(--yellow);}
   .global-toggle label{
     display:flex;
     align-items:center;
@@ -657,7 +718,21 @@
       Solo mostrar casos con Cluster asignado
     </label>
     <span class="global-toggle-count" id="onlyClusterCount"></span>
+    <div class="date-range">
+      <div class="chips" id="datePresets">
+        <button type="button" data-preset="all">Todo</button>
+        <button type="button" data-preset="7">7 días</button>
+        <button type="button" data-preset="30">30 días</button>
+        <button type="button" data-preset="month">Este mes</button>
+        <button type="button" data-preset="prev">Mes anterior</button>
+      </div>
+      <input type="date" id="dateFrom" aria-label="Desde">
+      <span>a</span>
+      <input type="date" id="dateTo" aria-label="Hasta">
+      <span class="global-toggle-count" id="dateRangeCount"></span>
+    </div>
   </div>
+  <div class="movements" id="movementsBar"></div>
 </header>
 
 <main>
@@ -786,6 +861,7 @@ const COLUMNS = [
   { key:'SITE ID',                           label:'SITE ID',              sticky:'col-site'             },
   { key:'Operación',                         label:'Operación',            sticky:'col-operacion'        },
   { key:'Cluster',                           label:'Cluster',              sticky:'col-cluster'          },
+  { key:'_ultMov',                           label:'Últ. movimiento',      mono:true },
   { key:'Item Título',                       label:'Ítem',                 wrap:true  },
   { key:'ITEM ID',                           label:'Item ID',              mono:true },
   { key:'Seller ID',                         label:'Seller ID',            mono:true },
@@ -897,8 +973,17 @@ let corpOpCombo = null; // se asigna en init(); usado por renderCorpTab para ref
 // ---------- Toggle global: solo casos con Cluster asignado ----------
 let onlyWithCluster = false;
 let DATA = RAW; // vista activa que usa todo el dashboard; cambia con el toggle
+// Rango de fechas global (timestamps UTC); se inicializa con la primera y última fecha de los datos
+let dateFromTs = null, dateToTs = null, DATE_MIN = null, DATE_MAX = null;
 function applyClusterToggle(){
-  DATA = onlyWithCluster ? RAW.filter(r => (r['Cluster']||'').trim() !== '') : RAW;
+  const limited = (dateFromTs !== DATE_MIN) || (dateToTs !== DATE_MAX);
+  const props = Object.values(DATE_FIELDS).map(f=>f.prop);
+  const inR = t => t !== null && t >= dateFromTs && t <= dateToTs;
+  // Un caso entra al periodo si tuvo cualquier movimiento en él: ingreso o cierre (ICQA, LI o SHE)
+  DATA = RAW.filter(r =>
+    (!onlyWithCluster || (r['Cluster']||'').trim() !== '') &&
+    (!limited || props.some(p => inR(r[p])))
+  );
 }
 
 let filteredCache = null; // recomputed on filter/sort change, reused across page turns
@@ -918,12 +1003,39 @@ function populateSelect(id, values, allLabel){
 
 // precomputa un string de búsqueda en minúsculas por fila, una sola vez,
 // para no concatenar/lowercasear 5836 strings en cada tecla presionada
+// Fechas por campo. Las fechas posteriores a hoy (o texto que no es fecha) se tratan como "sin fecha".
+const _now = new Date();
+const HOY = Date.UTC(_now.getFullYear(), _now.getMonth(), _now.getDate());
+function parseFecha(v){
+  const p = String(v||'').trim().split('/');
+  if(p.length !== 3 || !p.every(x=>/^\d+$/.test(x))) return null;
+  const t = Date.UTC(+p[2], +p[1]-1, +p[0]);
+  return t <= HOY ? t : null;
+}
+const DATE_FIELDS = {
+  inc:  { prop:'_ts',     col:'Fecha de inclusión' },
+  she:  { prop:'_tsSHE',  col:'Fecha de conclusión por SHE' },
+  icqa: { prop:'_tsICQA', col:'Fecha de conclusión' },
+  li:   { prop:'_tsLI',   col:'Fecha de conclusión de la salida' },
+};
 RAW.forEach(r=>{
+  Object.values(DATE_FIELDS).forEach(f=>{ r[f.prop] = parseFecha(r[f.col]); });
+  const ts = Object.values(DATE_FIELDS).map(f=>r[f.prop]).filter(t=>t!==null);
+  r._tsLast = ts.length ? Math.max(...ts) : null;
+  r._ultMov = r._tsLast === null ? '' : (d=>`${String(d.getUTCDate()).padStart(2,'0')}/${String(d.getUTCMonth()+1).padStart(2,'0')}/${d.getUTCFullYear()}`)(new Date(r._tsLast));
   r._searchBlob = (
     (r['ITEM ID']||'') + ' ' + (r['Item Título']||'') + ' ' +
     (r['Seller ID']||'') + ' ' + (r['SKU']||'') + ' ' + (r['Dominio']||'')
   ).toLowerCase();
 });
+
+function computeDateBounds(){
+  const props = Object.values(DATE_FIELDS).map(f=>f.prop);
+  DATE_MIN = null; DATE_MAX = null;
+  RAW.forEach(r=>props.forEach(p=>{ const t=r[p]; if(t!==null){ if(DATE_MIN===null||t<DATE_MIN) DATE_MIN=t; if(DATE_MAX===null||t>DATE_MAX) DATE_MAX=t; } }));
+  dateFromTs = DATE_MIN; dateToTs = DATE_MAX;
+}
+computeDateBounds();
 
 function applyFilters(){
   const q = state.search.trim().toLowerCase();
@@ -941,8 +1053,9 @@ function applyFilters(){
   });
 
   rows.sort((a,b)=>{
-    let av = a[state.sortKey] || '';
-    let bv = b[state.sortKey] || '';
+    const sv = r => state.sortKey === '_ultMov' ? (r._tsLast === null ? '' : String(r._tsLast)) : (r[state.sortKey] || '');
+    let av = sv(a);
+    let bv = sv(b);
     const an = parseFloat(av), bn = parseFloat(bv);
     let cmp;
     if(!isNaN(an) && !isNaN(bn) && String(an)===av.trim() && String(bn)===bv.trim()){
@@ -990,6 +1103,7 @@ function renderTable(){
   document.getElementById('resultCount').textContent = `${rows.length} de ${DATA.length} registros`;
   renderPager(rows.length, totalPages);
   renderKpis(rows);
+  if(activeTab === 'casos') renderMovements();
 }
 
 function renderPager(totalRows, totalPages){
@@ -1185,6 +1299,7 @@ function renderCorpTab(){
 
   document.getElementById('deptGrid').innerHTML = stats.map(renderDeptCard).join('');
   document.getElementById('corpResultCount').textContent = `${dataset.length} de ${DATA.length} registros`;
+  if(activeTab === 'corporativo') renderMovements();
 }
 
 // ---------- Combobox buscable (para el filtro de Operación) ----------
@@ -1418,6 +1533,7 @@ function renderMonitorTab(){
   renderNoIniciadoList();
 
   if(monOpCombo) monOpCombo.setValues(siteVals);
+  if(activeTab === 'resumen') renderMovements();
 
   const clusterVals = [...new Set(DATA.map(r=>(r['Cluster']||'').trim()).filter(Boolean))].sort();
   const clusterSel = document.getElementById('monCluster');
@@ -1437,6 +1553,61 @@ function initMonitorTab(){
     renderMonitorTab();
   });
   renderMonitorTab();
+}
+
+// ---------- Movimientos del periodo (qué cambió) ----------
+let activeTab = 'casos';
+// Filas de la vista que el usuario está mirando (respeta fechas, toggle de Cluster y los filtros de esa pestaña)
+function currentViewRows(){
+  if(activeTab === 'corporativo'){
+    return DATA.filter(r => (!corpState.site || r['SITE ID']===corpState.site) && (!corpState.operacion || r['Operación']===corpState.operacion));
+  }
+  if(activeTab === 'resumen'){
+    return DATA.filter(r => (r['Cluster']||'').trim() !== '' &&
+      (!monState.operacion || r['Operación']===monState.operacion) && (!monState.cluster || r['Cluster']===monState.cluster));
+  }
+  return getFiltered();
+}
+
+function renderMovements(){
+  const el = document.getElementById('movementsBar');
+  if(!el) return;
+  const viewRows = currentViewRows();
+  const inR = t => t !== null && t >= dateFromTs && t <= dateToTs;
+  const DAY = 86400000;
+  const span = Math.round((dateToTs - dateFromTs)/DAY) + 1;
+  const monthly = span > 62;
+  const key = t => { const s = new Date(t).toISOString(); return monthly ? s.slice(0,7) : s.slice(0,10); };
+  const tot = { n:0, she:0, icqa:0, li:0 };
+  const buckets = new Map();
+  const add = (t,k)=>{ if(!inR(t)) return; tot[k]++; const b = key(t); let o = buckets.get(b); if(!o){ o={n:0,she:0,icqa:0,li:0}; buckets.set(b,o); } o[k]++; };
+  viewRows.forEach(r=>{ add(r._ts,'n'); add(r._tsSHE,'she'); add(r._tsICQA,'icqa'); add(r._tsLI,'li'); });
+
+  const keys = [];
+  if(monthly){
+    const a = new Date(dateFromTs), z = new Date(dateToTs);
+    for(let y=a.getUTCFullYear(), m=a.getUTCMonth(); y<z.getUTCFullYear() || (y===z.getUTCFullYear() && m<=z.getUTCMonth()); ){
+      keys.push(`${y}-${String(m+1).padStart(2,'0')}`); m++; if(m>11){ m=0; y++; }
+    }
+  } else {
+    for(let t=dateFromTs; t<=dateToTs; t+=DAY) keys.push(key(t));
+  }
+  const totalOf = o => o ? o.n+o.she+o.icqa+o.li : 0;
+  const maxT = Math.max(1, ...keys.map(k=>totalOf(buckets.get(k))));
+  const COL = { n:'#9fa4d9', she:'#00c060', icqa:'#FFE600', li:'#ffffff' };
+  const LBL = { n:'Casos nuevos', she:'Cierres SHE', icqa:'Cierres ICQA', li:'Cierres Log. Inversa' };
+  const fmt = k => { const p=k.split('-'); return monthly ? `${p[1]}/${p[0]}` : `${p[2]}/${p[1]}/${p[0]}`; };
+
+  const pills = ['n','she','icqa','li'].map(k=>
+    `<span class="mv-pill"><i class="mv-dot" style="background:${COL[k]}"></i>${LBL[k]} <b>${tot[k].toLocaleString('es')}</b></span>`).join('');
+  const bars = keys.map(k=>{
+    const o = buckets.get(k) || {n:0,she:0,icqa:0,li:0};
+    const h = totalOf(o)/maxT*100;
+    const segs = ['n','she','icqa','li'].map(x=> o[x] ? `<div style="height:${o[x]/totalOf(o)*100}%;background:${COL[x]}"></div>` : '').join('');
+    const tip = `${fmt(k)}: ${o.n} nuevos · ${o.she} SHE · ${o.icqa} ICQA · ${o.li} LI`;
+    return `<div class="mv-bar" title="${tip}"><div class="mv-stack" style="height:${h}%">${segs}</div></div>`;
+  }).join('');
+  el.innerHTML = `<span class="mv-title">Movimientos del periodo</span><span class="mv-sub">${viewRows.length.toLocaleString('es')} casos en esta vista</span><div class="mv-pills">${pills}</div><div class="mv-chart">${bars}</div>`;
 }
 
 // ---------- Init ----------
@@ -1562,8 +1733,7 @@ function init(){
   }
   updateClusterCountLabel();
 
-  document.getElementById('onlyClusterToggle').addEventListener('change', e=>{
-    onlyWithCluster = e.target.checked;
+  function refreshAll(){
     applyClusterToggle();
     invalidateFilters();
     refreshTab1FilterOptions();
@@ -1571,7 +1741,64 @@ function init(){
     renderTable();
     renderCorpTab();
     renderMonitorTab();
+    updateDateCountLabel();
+  }
+
+  document.getElementById('onlyClusterToggle').addEventListener('change', e=>{
+    onlyWithCluster = e.target.checked;
+    refreshAll();
   });
+
+  // ---- Filtro global de fechas (simple: atajos + rango) ----
+  const fromEl = document.getElementById('dateFrom'), toEl = document.getElementById('dateTo');
+  const chips = [...document.querySelectorAll('#datePresets button')];
+  const DAY = 86400000;
+  const tsToIso = ts => new Date(ts).toISOString().slice(0,10);
+  const isoToTs = s => { const [y,m,d] = s.split('-').map(Number); return Date.UTC(y, m-1, d); };
+  const clamp = t => Math.min(Math.max(t, DATE_MIN), DATE_MAX);
+  function presetRange(p){
+    const end = DATE_MAX, e = new Date(end);
+    if(p==='all')   return [DATE_MIN, DATE_MAX];
+    if(p==='7')     return [clamp(end-6*DAY), end];
+    if(p==='30')    return [clamp(end-29*DAY), end];
+    if(p==='month') return [clamp(Date.UTC(e.getUTCFullYear(), e.getUTCMonth(), 1)), end];
+    if(p==='prev')  return [clamp(Date.UTC(e.getUTCFullYear(), e.getUTCMonth()-1, 1)), clamp(Date.UTC(e.getUTCFullYear(), e.getUTCMonth(), 0))];
+    return [DATE_MIN, DATE_MAX];
+  }
+  function markPreset(){
+    chips.forEach(c=>{
+      const [f,t] = presetRange(c.dataset.preset);
+      c.classList.toggle('active', f===dateFromTs && t===dateToTs);
+    });
+  }
+  function updateDateCountLabel(){
+    document.getElementById('dateRangeCount').textContent =
+      `${DATA.length.toLocaleString('es')} de ${RAW.length.toLocaleString('es')} casos`;
+    markPreset();
+    renderMovements();
+  }
+  function syncDateInputs(){ fromEl.value = tsToIso(dateFromTs); toEl.value = tsToIso(dateToTs); }
+  if(DATE_MIN === null){ fromEl.disabled = toEl.disabled = true; }
+  else {
+    fromEl.min = toEl.min = tsToIso(DATE_MIN);
+    fromEl.max = toEl.max = tsToIso(DATE_MAX);
+    syncDateInputs();
+  }
+  chips.forEach(c=>c.addEventListener('click', ()=>{
+    [dateFromTs, dateToTs] = presetRange(c.dataset.preset);
+    syncDateInputs(); refreshAll();
+  }));
+  fromEl.addEventListener('change', ()=>{
+    dateFromTs = fromEl.value ? clamp(isoToTs(fromEl.value)) : DATE_MIN;
+    if(dateFromTs > dateToTs) dateToTs = dateFromTs;
+    syncDateInputs(); refreshAll();
+  });
+  toEl.addEventListener('change', ()=>{
+    dateToTs = toEl.value ? clamp(isoToTs(toEl.value)) : DATE_MAX;
+    if(dateToTs < dateFromTs) dateFromTs = dateToTs;
+    syncDateInputs(); refreshAll();
+  });
+  updateDateCountLabel();
 
   // Tabs
   document.querySelectorAll('nav.tabs button').forEach(btn=>{
@@ -1579,7 +1806,9 @@ function init(){
       document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.remove('active'));
       document.querySelectorAll('main .panel').forEach(p=>p.classList.remove('active'));
       btn.classList.add('active');
-      document.getElementById('panel-' + btn.getAttribute('data-tab')).classList.add('active');
+      activeTab = btn.getAttribute('data-tab');
+      document.getElementById('panel-' + activeTab).classList.add('active');
+      renderMovements();
     });
   });
 }
