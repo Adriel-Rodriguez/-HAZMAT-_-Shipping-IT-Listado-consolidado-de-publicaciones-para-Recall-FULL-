@@ -105,11 +105,28 @@
   .top-row{ display:flex; justify-content:space-between; align-items:center; gap:20px; flex-wrap:wrap; }
   .brand{ display:flex; align-items:center; gap:16px; min-width:0; }
   .diamond{ flex:0 0 auto; width:54px; height:54px; }
-  .brand h1{ margin:0; font-size:24px; font-weight:900; letter-spacing:-0.015em; color:#fff; line-height:1.15; }
-  .brand .sheet-name{ margin:3px 0 0; font-size:12.5px; color:#b8bce6; }
-  .brand .source-meta{ margin:6px 0 0; font-size:12px; color:#d7d9f2; display:flex; align-items:center; gap:6px; }
-  .brand .source-meta:empty{display:none;}
-  .live-dot{ width:8px; height:8px; border-radius:50%; background:var(--green); box-shadow:0 0 0 3px rgba(0,166,80,.25); display:inline-block; }
+  .brand h1{ margin:0; font-size:36px; font-weight:900; letter-spacing:0.04em; color:#fff; line-height:1; }
+  .brand .tagline{ margin:5px 0 0; font-size:13.5px; font-weight:700; color:#c9ccef; }
+  .brand .source-meta{ margin:7px 0 0; font-size:12px; color:#b8bce6; display:flex; align-items:center; gap:4px; }
+
+  /* Foquito "en vivo": el nombre del archivo solo aparece al pasar el cursor */
+  .live{ position:relative; display:inline-grid; place-items:center; width:20px; height:20px; border-radius:50%; cursor:help; outline:none; }
+  .live:focus-visible{ box-shadow:0 0 0 2px var(--yellow); }
+  .live-dot{ width:9px; height:9px; border-radius:50%; background:var(--green); box-shadow:0 0 0 0 rgba(0,166,80,.55); animation:live 2.4s ease-out infinite; }
+  @keyframes live{ 0%{ box-shadow:0 0 0 0 rgba(0,166,80,.55); } 70%,100%{ box-shadow:0 0 0 7px rgba(0,166,80,0); } }
+  .live-tip{
+    position:absolute; left:-6px; top:calc(100% + 8px); z-index:40;
+    width:max-content; max-width:min(440px, 80vw);
+    background:var(--panel); color:var(--ink); border:1px solid var(--line);
+    border-radius:8px; padding:9px 12px; font-size:12.5px; line-height:1.45; text-align:left;
+    box-shadow:var(--pop-shadow);
+    opacity:0; visibility:hidden; transform:translateY(-3px);
+    transition:opacity .15s ease, transform .15s ease, visibility .15s;
+    pointer-events:none;
+  }
+  .live-tip::before{ content:""; position:absolute; left:11px; top:-6px; width:10px; height:10px; background:var(--panel); border-left:1px solid var(--line); border-top:1px solid var(--line); transform:rotate(45deg); }
+  .live-tip b{ display:block; font-size:11.5px; color:var(--ink-soft); font-weight:700; margin-bottom:2px; }
+  .live:hover .live-tip, .live:focus .live-tip{ opacity:1; visibility:visible; transform:none; }
 
   .top-actions{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
   .theme-switch{ display:inline-flex; padding:4px; gap:2px; border-radius:999px; background:rgba(255,255,255,0.10); }
@@ -496,7 +513,7 @@
   }
   @media (max-width:700px){
     .top-inner, .wrap-max, main, footer.foot{ padding-left:16px; padding-right:16px; }
-    .brand h1{ font-size:19px; }
+    .brand h1{ font-size:28px; }
     nav.tabs button{ min-width:170px; }
     .flow, .semaforo, .corp-summary{ grid-template-columns:1fr; }
     .gloss{ grid-template-columns:1fr; }
@@ -531,9 +548,15 @@
       <div class="brand">
         <svg class="diamond" aria-hidden="true"><use href="#hz-diamond"/></svg>
         <div>
-          <h1>Recall de publicaciones HAZMAT</h1>
-          <p class="sheet-name">[HAZMAT _ Shipping IT] Listado consolidado de publicaciones para Recall (FULL)</p>
-          <p class="source-meta"><span class="live-dot"></span><span id="sourceMeta"></span></p>
+          <h1>HAZMAT</h1>
+          <p class="tagline">Recall de publicaciones · operación FULL</p>
+          <p class="source-meta">
+            <span class="live" tabindex="0" aria-describedby="sourceFile">
+              <span class="live-dot"></span>
+              <span class="live-tip" role="tooltip" id="sourceFile"><b>Archivo de origen</b><span id="sourceFileName">Cargando…</span></span>
+            </span>
+            <span id="sourceMeta">En vivo</span>
+          </p>
         </div>
       </div>
       <div class="top-actions">
@@ -1950,7 +1973,9 @@ async function loadDashboard(){
     const meta = document.getElementById('sourceMeta');
     if(meta){
       const d = new Date(file.modifiedTime);
-      meta.textContent = `Datos en vivo de «${file.name}», actualizado ${d.toLocaleString('es-MX', {dateStyle:'medium', timeStyle:'short'})}`;
+      meta.textContent = `En vivo · actualizado ${d.toLocaleString('es-MX', {dateStyle:'medium', timeStyle:'short'})}`;
+      const fname = document.getElementById('sourceFileName');
+      if(fname) fname.textContent = file.name;
     }
 
     const src = document.getElementById('dashboard-src');
