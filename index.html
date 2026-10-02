@@ -288,6 +288,10 @@
   .formula .term{ background:var(--navy-soft); color:var(--brand-ink); font-weight:800; padding:3px 9px; border-radius:6px; }
   .formula .term.ok{ background:var(--green-bg); color:var(--green-ink); }
   .formula .term.pend{ background:var(--amber-bg); color:var(--amber-ink); }
+  .formula-stack{ display:flex; flex-direction:column; gap:7px; margin-top:10px; }
+  .formula-line{ display:flex; align-items:flex-start; gap:10px; }
+  .formula-line .term{ flex:0 0 auto; }
+  .formula-line span:last-child{ color:var(--ink-soft); line-height:1.45; padding-top:1px; }
 
   /* Semáforo explicado */
   .semaforo{
@@ -584,6 +588,10 @@
         <span class="tab-name">Monitor-SHE</span>
         <span class="tab-desc">Avance por site contra la meta</span>
       </button>
+      <button data-tab="deadline">
+        <span class="tab-name">Deadline</span>
+        <span class="tab-desc">Semáforo de plazo de salida</span>
+      </button>
     </nav>
   </div>
 </header>
@@ -783,6 +791,59 @@
           </table>
         </div>
       </div>
+    </div>
+
+  </section>
+
+  <!-- ===================== TAB 4: DEADLINE ===================== -->
+  <section class="panel" id="panel-deadline">
+
+    <div class="intro">
+      <span class="intro-icon">i</span>
+      <div>
+        <h2>¿Quién va a tiempo con la salida del HAZMAT?</h2>
+        <p>Cada caso tiene un plazo para llegar a <b>Status de salida = Concluído</b>, contado en días calendario desde su <b>Fecha de inclusión</b>. El plazo sale del texto de <b>SALIDA indicada</b> (por ejemplo "15 días hábiles" → 15 días, "zero días" → 0 días); si un caso no trae un número reconocible ahí, se usa <b>5 días</b> por defecto.</p>
+        <div class="formula formula-stack">
+          <div class="formula-line"><span class="term ok">Verde</span><span>cerrado dentro del plazo</span></div>
+          <div class="formula-line"><span class="term pend">Ámbar</span><span>abierto, dentro del plazo</span></div>
+          <div class="formula-line"><span class="term" style="background:var(--red-bg);color:var(--red-ink);">Rojo</span><span>vencido (abierto o cerrado tarde)</span></div>
+          <div class="formula-line"><span class="term" style="background:var(--gray-bg);color:var(--gray-ink);">Gris</span><span>no cuenta para el plazo: cancelado, no aplica, o "Concluído" sin fecha de cierre SHE capturada</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="kpis" id="deadlineKpiRow"></div>
+
+    <div class="section-head">
+      <div>
+        <h3 class="section-title">Cumplimiento por site</h3>
+        <p class="section-help">% cumplimiento = A tiempo ÷ (A tiempo + Vencidos). Ordenado del peor al mejor.</p>
+      </div>
+    </div>
+    <div class="dept-grid" id="deadlineSiteGrid"></div>
+
+    <div class="section-head">
+      <div>
+        <h3 class="section-title">Detalle por caso</h3>
+        <p class="section-help">Ordenado por urgencia: primero los vencidos (más días vencidos arriba), luego los que están por vencer.</p>
+      </div>
+      <span class="result-count" id="deadlineResultCount"></span>
+    </div>
+    <div class="table-wrap">
+      <table id="deadlineTable">
+        <thead><tr>
+          <th>#</th><th>Fecha inclusión</th><th>País</th><th>SITE ID</th><th>Operación</th><th>Cluster</th>
+          <th>Fecha límite</th><th>Status de salida</th><th class="wrap">Días</th><th>Semáforo</th>
+        </tr></thead>
+        <tbody id="deadlineTbody"></tbody>
+      </table>
+    </div>
+    <div class="pager">
+      <button id="ddPagerFirst" class="pager-btn">&laquo; Primera</button>
+      <button id="ddPagerPrev" class="pager-btn">&lsaquo; Anterior</button>
+      <span class="pager-info" id="deadlinePagerInfo"></span>
+      <button id="ddPagerNext" class="pager-btn">Siguiente &rsaquo;</button>
+      <button id="ddPagerLast" class="pager-btn">Última &raquo;</button>
     </div>
 
   </section>
@@ -1547,6 +1608,164 @@ function initMonitorTab(){
   renderMonitorTab();
 }
 
+// ============================================================
+// TAB 4 — Deadline (semáforo de cumplimiento del plazo de salida)
+// ============================================================
+// Plazo por caso: se toma el número de días de "SALIDA indicada" (ej. "15 días hábiles" -> 15,
+// "zero días" -> 0). Si no trae un número reconocible, se usa el respaldo de 5 días.
+// Los días se cuentan calendario (incluyen fin de semana), desde "Fecha de inclusión".
+function parseDeadlineDays(salidaIndicada){
+  const txt = (salidaIndicada || '').toLowerCase();
+  if(!txt.trim()) return 5;
+  if(/\bzero\b|\bcero\b/.test(txt)) return 0;
+  const m = txt.match(/(\d+)/);
+  return m ? parseInt(m[1], 10) : 5;
+}
+
+// Devuelve null si el caso no se puede evaluar (sin fecha de inclusión válida).
+function computeDeadlineInfo(row){
+  if(row._ts === null) return null;
+  const days = parseDeadlineDays(row['SALIDA indicada']);
+  const deadlineTs = row._ts + days*86400000;
+  const bucket = statusBucket(row['Status de salida']);
+  const fechaCierreSHE = (row['Fecha de conclusión por SHE']||'').trim(); // ya viene como DD/MM/AAAA
+
+  if(bucket === 'Cancelado' || bucket === 'No aplica'){
+    return { days, deadlineTs, sem:'gray', diasTexto:'No aplica', priority:3, severity:0 };
+  }
+  if(bucket === 'Completado'){
+    const closedTs = row._tsSHE;
+    if(closedTs === null){
+      // Concluído pero sin "Fecha de conclusión por SHE" registrada: no hay forma de
+      // verificar si cumplió el plazo, así que no cuenta ni a favor ni en contra.
+      return { days, deadlineTs, sem:'gray', diasTexto:'Concluído, sin fecha de cierre registrada', priority:3, severity:0 };
+    }
+    if(closedTs <= deadlineTs){
+      return { days, deadlineTs, sem:'green', diasTexto:`Cerrado el ${fechaCierreSHE} (a tiempo)`, priority:2, severity:0 };
+    }
+    const lateDays = Math.round((closedTs - deadlineTs)/86400000);
+    return { days, deadlineTs, sem:'red', diasTexto:`Cerrado el ${fechaCierreSHE} (${lateDays}d tarde)`, priority:0, severity: lateDays };
+  }
+  // Pendiente: el caso sigue abierto
+  const diffDays = Math.round((HOY - deadlineTs)/86400000); // >0 = ya venció
+  const fechaLimiteTxt = fmtDeadlineDate(deadlineTs);
+  if(diffDays > 0){
+    return { days, deadlineTs, sem:'red', diasTexto:`Venció el ${fechaLimiteTxt} (hace ${diffDays}d)`, priority:0, severity: diffDays + 100000 };
+  }
+  const restantes = -diffDays;
+  return { days, deadlineTs, sem:'amber',
+    diasTexto: restantes===0 ? `Vence hoy (${fechaLimiteTxt})` : `Vence el ${fechaLimiteTxt} (quedan ${restantes}d)`,
+    priority:1, severity: -restantes };
+}
+
+let ddPage = 0;
+const DD_SEM_LABEL = { green:'A tiempo', amber:'En curso', red:'Vencido', gray:'No aplica' };
+
+function renderDeadlineSites(infos){
+  const bySite = {};
+  infos.forEach(({row, info})=>{
+    if(info.sem === 'gray') return; // no aplica: no cuenta para el semáforo del site
+    const site = row['SITE ID'] || '(sin site)';
+    bySite[site] = bySite[site] || { green:0, amber:0, red:0 };
+    bySite[site][info.sem]++;
+  });
+  const entries = Object.entries(bySite).map(([site,c])=>{
+    const total = c.green + c.amber + c.red;
+    const base = c.green + c.red;
+    const cumpl = base ? Math.round(c.green/base*100) : null;
+    return { site, ...c, total, cumpl };
+  }).sort((a,b)=> (a.cumpl===null?101:a.cumpl) - (b.cumpl===null?101:b.cumpl));
+
+  document.getElementById('deadlineSiteGrid').innerHTML = entries.map(e=>{
+    const segs = [['green',e.green],['amber',e.amber],['red',e.red]];
+    const bar = segs.map(([cls,n])=> n ? `<div class="bar-seg seg-${cls}" style="width:${n/e.total*100}%">${n}</div>` : '').join('');
+    const pctCls = e.cumpl===null ? 'gray' : (e.cumpl>=90?'green':e.cumpl>=70?'amber':'red');
+    return `
+      <div class="dept-card">
+        <div class="dept-head"><h3>${e.site}</h3><span class="dept-pct ${pctCls}">${e.cumpl===null?'—':e.cumpl+'%'}</span></div>
+        <div class="dept-source">cumplimiento del plazo · <b>${e.total}</b> casos evaluables</div>
+        <div class="bar-track">${bar}</div>
+        <div class="dept-legend">
+          <span><i class="green"></i>A tiempo: ${e.green}</span>
+          <span><i class="amber"></i>Por vencer: ${e.amber}</span>
+          <span><i class="red"></i>Vencidos: ${e.red}</span>
+        </div>
+      </div>`;
+  }).join('') || '<div class="combo-empty">Sin casos evaluables en este periodo</div>';
+}
+
+function fmtDeadlineDate(ts){
+  const d = new Date(ts);
+  return `${String(d.getUTCDate()).padStart(2,'0')}/${String(d.getUTCMonth()+1).padStart(2,'0')}/${d.getUTCFullYear()}`;
+}
+
+function renderDeadlineTable(infos){
+  const sorted = infos.slice().sort((a,b)=>{
+    if(a.info.priority !== b.info.priority) return a.info.priority - b.info.priority;
+    return b.info.severity - a.info.severity;
+  });
+  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+  if(ddPage >= totalPages) ddPage = totalPages - 1;
+  if(ddPage < 0) ddPage = 0;
+  const start = ddPage * PAGE_SIZE;
+  const pageItems = sorted.slice(start, start + PAGE_SIZE);
+
+  document.getElementById('deadlineTbody').innerHTML = pageItems.map(({row, info})=>`
+    <tr>
+      <td class="mono">${row['#']}</td>
+      <td class="mono">${row['Fecha de inclusión']}</td>
+      <td>${row['País']}</td>
+      <td><span class="site-tag">${row['SITE ID']}</span></td>
+      <td class="mono">${row['Operación']}</td>
+      <td>${row['Cluster'] || '—'}</td>
+      <td class="mono">${fmtDeadlineDate(info.deadlineTs)} <span class="prog-count">(${info.days}d)</span></td>
+      <td>${row['Status de salida'] || '—'}</td>
+      <td class="wrap">${info.diasTexto}</td>
+      <td><span class="badge ${info.sem}">${DD_SEM_LABEL[info.sem]}</span></td>
+    </tr>`).join('') || `<tr><td colspan="10" class="combo-empty">Sin casos en este periodo</td></tr>`;
+
+  document.getElementById('deadlineResultCount').textContent = `${sorted.length.toLocaleString('es')} casos evaluados`;
+  const endIdx = Math.min(sorted.length, start + PAGE_SIZE);
+  document.getElementById('deadlinePagerInfo').textContent = sorted.length
+    ? `Filas ${start+1}–${endIdx} de ${sorted.length} · página ${ddPage+1} de ${totalPages}`
+    : 'Sin resultados';
+  document.getElementById('ddPagerFirst').disabled = ddPage===0;
+  document.getElementById('ddPagerPrev').disabled = ddPage===0;
+  document.getElementById('ddPagerNext').disabled = ddPage>=totalPages-1;
+  document.getElementById('ddPagerLast').disabled = ddPage>=totalPages-1;
+}
+
+function renderDeadlineTab(){
+  const rows = getFiltered();
+  const infos = rows.map(row=>({ row, info: computeDeadlineInfo(row) })).filter(x=>x.info);
+
+  const counts = { green:0, amber:0, red:0, gray:0 };
+  infos.forEach(x=>counts[x.info.sem]++);
+  const base = counts.green + counts.red;
+  const pct = base ? Math.round(counts.green/base*100) : null;
+  const pctCls = pct===null ? '' : (pct>=90?'k-green':pct>=70?'k-amber':'k-red');
+
+  document.getElementById('deadlineKpiRow').innerHTML = `
+    <div class="kpi k-red"><div class="num">${counts.red.toLocaleString('es')}</div><div class="lbl">Vencidos</div></div>
+    <div class="kpi k-amber"><div class="num">${counts.amber.toLocaleString('es')}</div><div class="lbl">Por vencer (en plazo)</div></div>
+    <div class="kpi k-green"><div class="num">${counts.green.toLocaleString('es')}</div><div class="lbl">A tiempo</div></div>
+    <div class="kpi"><div class="num">${counts.gray.toLocaleString('es')}</div><div class="lbl">No aplica (cancelado / N/A)</div></div>
+    <div class="kpi ${pctCls}"><div class="num">${pct===null?'—':pct+'%'}</div><div class="lbl">% cumplimiento del plazo</div></div>
+  `;
+
+  renderDeadlineSites(infos);
+  renderDeadlineTable(infos);
+  if(activeTab === 'deadline') renderMovements();
+}
+
+function initDeadlineTab(){
+  document.getElementById('ddPagerFirst').addEventListener('click', ()=>{ ddPage = 0; renderDeadlineTab(); });
+  document.getElementById('ddPagerPrev').addEventListener('click', ()=>{ ddPage -= 1; renderDeadlineTab(); });
+  document.getElementById('ddPagerNext').addEventListener('click', ()=>{ ddPage += 1; renderDeadlineTab(); });
+  document.getElementById('ddPagerLast').addEventListener('click', ()=>{ ddPage = 999999; renderDeadlineTab(); });
+  renderDeadlineTab();
+}
+
 // ---------- Movimientos del periodo (qué cambió) ----------
 let activeTab = 'casos';
 // Filas de la vista que el usuario está mirando (respeta fechas, toggle de Cluster y los filtros de esa pestaña)
@@ -1611,7 +1830,7 @@ function init(){
   renderHead();
   renderTable();
 
-  const onFilterChange = ()=>{ invalidateFilters(); refreshTab1FilterOptions(); renderTable(); renderCorpTab(); renderMonitorTab(); };
+  const onFilterChange = ()=>{ invalidateFilters(); refreshTab1FilterOptions(); renderTable(); renderCorpTab(); renderMonitorTab(); ddPage = 0; renderDeadlineTab(); };
 
   // ---- filtros en cascada de "Datos de los Casos" ----
   const TAB1_FILTERS = [
@@ -1676,6 +1895,7 @@ function init(){
   refreshTab1FilterOptions();
   renderCorpTab();
   initMonitorTab();
+  initDeadlineTab();
 
   document.getElementById('search').addEventListener('input', debounce(e=>{
     state.search = e.target.value;
@@ -1700,6 +1920,8 @@ function init(){
     renderTable();
     renderCorpTab();
     renderMonitorTab();
+    ddPage = 0;
+    renderDeadlineTab();
   });
 
   document.getElementById('pagerFirst').addEventListener('click', ()=>{ state.page = 0; renderTable(); });
@@ -1726,6 +1948,8 @@ function init(){
     renderTable();
     renderCorpTab();
     renderMonitorTab();
+    ddPage = 0;
+    renderDeadlineTab();
     updateDateCountLabel();
   }
 
